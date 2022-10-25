@@ -12,6 +12,7 @@ from PIL import Image
 import numpy as np
 
 import json
+import pickle as pkl
 
 from imagen_pytorch.t5 import t5_encode_text
 
@@ -36,7 +37,8 @@ class COCODataset(Dataset):
         annotations_folder,
         image_size,
         exts = ['jpg', 'jpeg', 'png', 'tiff'],
-        convert_image_to_type = None
+        convert_image_to_type = None,
+        embeds=True
     ):
         super().__init__()
         self.image_folder = image_folder
@@ -44,6 +46,13 @@ class COCODataset(Dataset):
         self.paths = [p for ext in exts for p in Path(f'{image_folder}').glob(f'**/*.{ext}')]
         ids = [int(str(path).split('_')[-1].split('.')[0]) for path in self.paths]
         self.id_to_path = {idn: path for idn, path in zip(ids, self.paths)}
+        
+        self.embeds = embeds
+        if embeds:
+            with open(f"../captions_train2017_embeds.pkl", 'rb') as f:
+                self.annotations = pkl.load(f)
+            print(self.annotations)
+        
         with open(f"{annotations_folder}/captions_train2014.json", 'r') as f:
             self.annotations = json.load(f)
             
@@ -57,15 +66,32 @@ class COCODataset(Dataset):
             T.ToTensor()
         ])
 
+    def generate_embeds(self):
+        arr = []
+        for index in range(len(self.paths)):
+            annotation = self.annotations['annotations'][index]    
+            caption = annotation['caption']
+            text_embeds, text_masks = t5_encode_text([caption], return_attn_mask = True)
+            # text_embeds = F.pad(input = text_embeds, pad=(0, 0, 0, 256-text_embeds.shape[1], 0, 0), mode='constant', value=0)
+            text_embeds = text_embeds[0,:,:]
+
+            arr.append(text_embeds)
+
+            print(text_embeds.shape)
+        np.save("../embeds_2014.npy", np.asarray(arr))
+
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, index):
         annotation = self.annotations['annotations'][index]     
-        caption = annotation['caption']
-        text_embeds, text_masks = t5_encode_text([caption], return_attn_mask = True)
-        text_embeds = F.pad(input = text_embeds, pad=(0, 0, 0, 256-text_embeds.shape[1], 0, 0), mode='constant', value=0)
-        text_embeds = text_embeds[0,:,:]
+        if self.embeds:
+            text_embeds = annotation['embed']
+        else:
+            caption = annotation['caption']
+            text_embeds, text_masks = t5_encode_text([caption], return_attn_mask = True)
+            text_embeds = F.pad(input = text_embeds, pad=(0, 0, 0, 256-text_embeds.shape[1], 0, 0), mode='constant', value=0)
+            text_embeds = text_embeds[0,:,:]
 
         path = self.id_to_path[annotation['image_id']]
         img = Image.open(path)
@@ -85,4 +111,5 @@ class COCODataset(Dataset):
         return self.transform(img), text_embeds
 
 if __name__ == "__main__":
-    COCODataset('../train2014', '../annotations_trainval2014/annotations', image_size = 64)
+    data = COCODataset('../train2014', '../annotations_trainval2014/annotations', image_size = 64, embeds = False)
+    data.generate_embeds()
